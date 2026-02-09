@@ -2,11 +2,13 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>弾性衝突シミュレーション — π を数える</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: #080c14; overflow-x: hidden; }
+  html, body { height: 100%; overflow: hidden; background: #080c14; touch-action: manipulation; }
+  /* Font size >= 16px prevents iOS auto-zoom on input focus */
+  input[type="text"] { font-size: 16px !important; }
   .fat-slider{-webkit-appearance:none;appearance:none;width:100%;height:36px;background:transparent;cursor:pointer;touch-action:none}
   .fat-slider::-webkit-slider-runnable-track{height:10px;background:#1e3450;border-radius:5px}
   .fat-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:28px;height:28px;background:#5ca0f0;border-radius:50%;border:2px solid #2e78d6;margin-top:-9px}
@@ -18,12 +20,12 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
 </head>
 <body>
-<div id="root"></div>
+<div id="root" style="height:100%"></div>
 <script type="text/babel">
 const { useState, useEffect, useRef, useCallback } = React;
 
 const WALL_W = 20;
-const FLOOR_H = 40;
+const FLOOR_H = 36;
 const WALL_POS = 10;
 const INIT_X1 = 3;
 const INIT_X2 = 5;
@@ -68,12 +70,7 @@ function sampleTimeline(tl, simTime) {
   let lo = 0, hi = tl.length - 1;
   while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (tl[mid].t <= simTime) lo = mid; else hi = mid - 1; }
   const s = tl[lo], dt = Math.max(0, simTime - s.t);
-  return {
-    x1: s.x1 + s.v1 * dt, x2: s.x2 + s.v2 * dt,
-    collisions: s.count,
-    flash: (lo > 0 && dt < 0.06) ? s.type : null,
-    isLastSegment: lo === tl.length - 1, segIndex: lo,
-  };
+  return { x1: s.x1 + s.v1 * dt, x2: s.x2 + s.v2 * dt, collisions: s.count, flash: (lo > 0 && dt < 0.06) ? s.type : null, isLastSegment: lo === tl.length - 1, segIndex: lo };
 }
 
 class SoundEngine {
@@ -82,22 +79,14 @@ class SoundEngine {
   playBurst(n) {
     if (!this.ctx) return;
     const now = this.ctx.currentTime, g = 0.004, max = Math.min(n, 60);
-    for (let i = 0; i < max; i++) {
-      const w = now + i * g;
-      if (w < this.scheduled) continue;
-      this._t(w, Math.max(0.03, 0.09 - i * 0.001));
-      this.scheduled = w + 0.025;
-    }
+    for (let i = 0; i < max; i++) { const w = now + i * g; if (w < this.scheduled) continue; this._t(w, Math.max(0.03, 0.09 - i * 0.001)); this.scheduled = w + 0.025; }
   }
   _t(w, v) {
     const c = this.ctx; if (!c) return;
     const o = c.createOscillator(), g = c.createGain();
-    o.connect(g); g.connect(c.destination);
-    o.type = "triangle";
-    o.frequency.setValueAtTime(900, w);
-    o.frequency.exponentialRampToValueAtTime(300, w + 0.04);
-    g.gain.setValueAtTime(v, w);
-    g.gain.exponentialRampToValueAtTime(0.001, w + 0.05);
+    o.connect(g); g.connect(c.destination); o.type = "triangle";
+    o.frequency.setValueAtTime(900, w); o.frequency.exponentialRampToValueAtTime(300, w + 0.04);
+    g.gain.setValueAtTime(v, w); g.gain.exponentialRampToValueAtTime(0.001, w + 0.05);
     o.start(w); o.stop(w + 0.055);
   }
 }
@@ -115,7 +104,8 @@ function App() {
   const [warning, setWarning] = useState(null);
   const [running, setRunning] = useState(false);
   const [speed, setSpeed] = useState(1);
-  const [canvasSize, setCanvasSize] = useState({ w: 370, h: 200 });
+  const [layoutW, setLayoutW] = useState(370);
+  const [canvasH, setCanvasH] = useState(160);
 
   const [collisions, setCollisions] = useState(0);
   const [total, setTotal] = useState(null);
@@ -130,13 +120,20 @@ function App() {
 
   useEffect(() => {
     soundRef.current = new SoundEngine();
-    function upd() { const w = Math.min(window.innerWidth - 28, 500); setCanvasSize({ w, h: Math.round(w * 0.54) }); }
+    function upd() {
+      const vw = window.innerWidth, vh = window.innerHeight;
+      const w = Math.min(vw - 24, 500);
+      setLayoutW(w);
+      // Fixed elements height: title(20) + subtitle(16) + stats(62) + controls(~260) + gaps(~32) ≈ 390
+      const fixedH = 390;
+      setCanvasH(Math.max(80, vh - fixedH));
+    }
     upd(); window.addEventListener("resize", upd);
     return () => window.removeEventListener("resize", upd);
   }, []);
 
   const szM = blockSize(massM), szm = blockSize(massm);
-  const wallXpx = canvasSize.w - WALL_W;
+  const wallXpx = layoutW - WALL_W;
   const leftMargin = szM.w + 8;
   const scl = (wallXpx - szm.w - leftMargin) / WALL_POS;
   const w2px = useCallback((wx) => leftMargin + wx * scl, [leftMargin, scl]);
@@ -144,7 +141,7 @@ function App() {
   const draw = useCallback((wx1, wx2, fl) => {
     const canvas = canvasRef.current; if (!canvas) return;
     const dpr = window.devicePixelRatio || 1;
-    const W = canvasSize.w, H = canvasSize.h;
+    const W = layoutW, H = canvasH;
     canvas.width = W * dpr; canvas.height = H * dpr;
     const ctx = canvas.getContext("2d");
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -187,7 +184,7 @@ function App() {
 
     if (fl === "ball") { const fx = m1R, fy = floorY - Math.max(szM.h, szm.h) / 2; const fG = ctx.createRadialGradient(fx, fy, 0, fx, fy, 20); fG.addColorStop(0, "rgba(255,220,60,0.5)"); fG.addColorStop(1, "rgba(255,220,60,0)"); ctx.fillStyle = fG; ctx.beginPath(); ctx.arc(fx, fy, 20, 0, Math.PI * 2); ctx.fill(); }
     if (fl === "wall") { const fy = floorY - szm.h / 2; const fG = ctx.createRadialGradient(wallXpx, fy, 0, wallXpx, fy, 20); fG.addColorStop(0, "rgba(255,85,85,0.5)"); fG.addColorStop(1, "rgba(255,85,85,0)"); ctx.fillStyle = fG; ctx.beginPath(); ctx.arc(wallXpx, fy, 20, 0, Math.PI * 2); ctx.fill(); }
-  }, [canvasSize, w2px, szM, szm, wallXpx]);
+  }, [layoutW, canvasH, w2px, szM, szm, wallXpx]);
 
   const drawRef = useRef(draw);
   useEffect(() => { drawRef.current = draw; }, [draw]);
@@ -208,9 +205,7 @@ function App() {
     if (animRef.current) cancelAnimationFrame(animRef.current);
     const v = validateAndParse();
     if (v.err) { setWarning(v.err); return; }
-    setWarning(null);
-    soundRef.current?.init();
-    lastSegRef.current = -1;
+    setWarning(null); soundRef.current?.init(); lastSegRef.current = -1;
     const { timeline, totalCollisions: tot } = buildTimeline(v.M, v.m);
     simRef.current = { timeline, simTime: 0, separatingStart: null, tot };
     setCollisions(0); setTotal(tot); setFlash(null); setDb(1.0); setDw(INIT_WALL_NORM);
@@ -219,8 +214,7 @@ function App() {
 
   const stop = useCallback(() => {
     if (animRef.current) cancelAnimationFrame(animRef.current);
-    setRunning(false);
-    setCollisions(0); setTotal(null); setFlash(null); setDb(1.0); setDw(INIT_WALL_NORM);
+    setRunning(false); setCollisions(0); setTotal(null); setFlash(null); setDb(1.0); setDw(INIT_WALL_NORM);
     drawRef.current(INIT_X1, INIT_X2, null);
   }, []);
 
@@ -234,34 +228,26 @@ function App() {
       st.simTime += dt * speedRef.current;
       const s = sampleTimeline(st.timeline, st.simTime);
       const S = settersRef.current;
-
-      S.setCollisions(s.collisions);
-      S.setFlash(s.flash);
+      S.setCollisions(s.collisions); S.setFlash(s.flash);
       S.setDb(Math.max(0, s.x2 - s.x1) / INIT_GAP);
       S.setDw(Math.max(0, WALL_POS - s.x2) / INIT_GAP);
-
-      if (s.segIndex > 0 && s.segIndex !== lastSegRef.current) {
-        soundRef.current?.playBurst(s.segIndex - Math.max(lastSegRef.current, 0));
-        lastSegRef.current = s.segIndex;
-      }
-
+      if (s.segIndex > 0 && s.segIndex !== lastSegRef.current) { soundRef.current?.playBurst(s.segIndex - Math.max(lastSegRef.current, 0)); lastSegRef.current = s.segIndex; }
       if (s.isLastSegment) {
         if (!st.separatingStart) st.separatingStart = ts;
         else if (ts - st.separatingStart > 3000) {
-          S.setRunning(false);
-          S.setCollisions(0); S.setTotal(null); S.setFlash(null);
-          S.setDb(1.0); S.setDw(INIT_WALL_NORM);
-          drawRef.current(INIT_X1, INIT_X2, null);
-          return;
+          S.setRunning(false); S.setCollisions(0); S.setTotal(null); S.setFlash(null); S.setDb(1.0); S.setDw(INIT_WALL_NORM);
+          drawRef.current(INIT_X1, INIT_X2, null); return;
         }
       }
-
       drawRef.current(s.x1, s.x2, s.flash);
       animRef.current = requestAnimationFrame(loop);
     };
     animRef.current = requestAnimationFrame(loop);
     return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
   }, [running]);
+
+  // Blur input on Enter to dismiss keyboard
+  const handleKeyDown = (e) => { if (e.key === "Enter") e.target.blur(); };
 
   const presets = [
     { M: "1", m: "1", label: "1:1" },
@@ -271,64 +257,68 @@ function App() {
     { M: "100000000", m: "1", label: "10⁸:1" },
   ];
 
-  const fi = {
-    width: "100%", padding: "7px 10px", background: "#0a1020",
-    border: "1px solid #1e3450", borderRadius: "6px", color: "#cde",
-    fontFamily: "monospace", fontSize: "14px", boxSizing: "border-box",
-  };
+  const fi = { width: "100%", padding: "7px 10px", background: "#0a1020", border: "1px solid #1e3450", borderRadius: 6, color: "#cde", fontFamily: "monospace", boxSizing: "border-box" };
   const fmtD = (v) => v < 0.001 ? "0.000" : v.toFixed(3);
   const bC = db <= 0.005 ? "#ef4444" : db < 0.15 ? "#ffa033" : "#5ca0f0";
   const wC = dw <= 0.005 ? "#ef4444" : dw < 0.15 ? "#ffa033" : "#ff5c7a";
 
   return (
-    <div style={{ minHeight: "100vh", background: "linear-gradient(160deg,#080c14 0%,#0e1524 50%,#080c14 100%)", color: "#c8d8e8", fontFamily: "'SF Mono','Menlo','Courier New',monospace", padding: "10px 12px", display: "flex", flexDirection: "column", alignItems: "center", maxWidth: 500, margin: "0 auto" }}>
-      <h1 style={{ fontSize: 15, fontWeight: 700, letterSpacing: 1, margin: "6px 0 2px", background: "linear-gradient(90deg,#5ca0f0,#ff5c7a)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>弾性衝突シミュレーション</h1>
-      <p style={{ fontSize: 9, color: "#4a6a8a", margin: "0 0 8px", textAlign: "center" }}>M/m = 100<sup>n</sup> で衝突回数が π の桁に一致</p>
+    <div style={{ height: "100dvh", background: "linear-gradient(160deg,#080c14 0%,#0e1524 50%,#080c14 100%)", color: "#c8d8e8", fontFamily: "'SF Mono','Menlo','Courier New',monospace", padding: "8px 12px", display: "flex", flexDirection: "column", alignItems: "center", maxWidth: 500, margin: "0 auto", overflow: "hidden" }}>
 
-      <div style={{ display: "flex", gap: 5, marginBottom: 8, width: "100%", maxWidth: canvasSize.w }}>
-        <div style={{ flex: 3, background: flash ? "rgba(255,215,0,0.07)" : "rgba(14,21,36,0.9)", border: "1.5px solid " + (flash ? "#ffd700" : "#1e3450"), borderRadius: 10, padding: "5px 8px 7px", textAlign: "center" }}>
+      <h1 style={{ fontSize: 15, fontWeight: 700, letterSpacing: 1, margin: "4px 0 1px", background: "linear-gradient(90deg,#5ca0f0,#ff5c7a)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", flexShrink: 0 }}>弾性衝突シミュレーション</h1>
+      <p style={{ fontSize: 9, color: "#4a6a8a", margin: "0 0 6px", textAlign: "center", flexShrink: 0 }}>M/m = 100<sup>n</sup> で衝突回数が π の桁に一致</p>
+
+      {/* Stats row */}
+      <div style={{ display: "flex", gap: 5, marginBottom: 6, width: "100%", maxWidth: layoutW, flexShrink: 0 }}>
+        <div style={{ flex: 3, background: flash ? "rgba(255,215,0,0.07)" : "rgba(14,21,36,0.9)", border: "1.5px solid " + (flash ? "#ffd700" : "#1e3450"), borderRadius: 10, padding: "4px 8px 6px", textAlign: "center" }}>
           <div style={{ fontSize: 8, color: "#4a6a8a", letterSpacing: 1.5 }}>衝突回数</div>
-          <div style={{ fontSize: 28, fontWeight: 800, color: flash ? "#ffd700" : "#5ca0f0", lineHeight: 1.1 }}>{collisions}</div>
+          <div style={{ fontSize: 26, fontWeight: 800, color: flash ? "#ffd700" : "#5ca0f0", lineHeight: 1.1 }}>{collisions}</div>
           {total !== null && <div style={{ fontSize: 9, color: "#4a6a8a", marginTop: 1 }}>/ {total}</div>}
         </div>
-        <div style={{ flex: 2, background: "rgba(14,21,36,0.9)", border: "1.5px solid " + (db <= 0.005 ? "#ef4444" : "#1e3450"), borderRadius: 10, padding: "5px 4px 7px", textAlign: "center" }}>
+        <div style={{ flex: 2, background: "rgba(14,21,36,0.9)", border: "1.5px solid " + (db <= 0.005 ? "#ef4444" : "#1e3450"), borderRadius: 10, padding: "4px 4px 6px", textAlign: "center" }}>
           <div style={{ fontSize: 7, color: "#5ca0f0", letterSpacing: 1 }}>M↔m</div>
-          <div style={{ fontSize: 18, fontWeight: 700, color: bC, lineHeight: 1.2, fontVariantNumeric: "tabular-nums" }}>{fmtD(db)}</div>
+          <div style={{ fontSize: 17, fontWeight: 700, color: bC, lineHeight: 1.2, fontVariantNumeric: "tabular-nums" }}>{fmtD(db)}</div>
           <div style={{ fontSize: 7, color: "#3a5a7a" }}>初期 1.000</div>
         </div>
-        <div style={{ flex: 2, background: "rgba(14,21,36,0.9)", border: "1.5px solid " + (dw <= 0.005 ? "#ef4444" : "#1e3450"), borderRadius: 10, padding: "5px 4px 7px", textAlign: "center" }}>
+        <div style={{ flex: 2, background: "rgba(14,21,36,0.9)", border: "1.5px solid " + (dw <= 0.005 ? "#ef4444" : "#1e3450"), borderRadius: 10, padding: "4px 4px 6px", textAlign: "center" }}>
           <div style={{ fontSize: 7, color: "#ff5c7a", letterSpacing: 1 }}>m↔壁</div>
-          <div style={{ fontSize: 18, fontWeight: 700, color: wC, lineHeight: 1.2, fontVariantNumeric: "tabular-nums" }}>{fmtD(dw)}</div>
+          <div style={{ fontSize: 17, fontWeight: 700, color: wC, lineHeight: 1.2, fontVariantNumeric: "tabular-nums" }}>{fmtD(dw)}</div>
           <div style={{ fontSize: 7, color: "#3a5a7a" }}>初期 {INIT_WALL_NORM.toFixed(3)}</div>
         </div>
       </div>
 
-      <div style={{ border: "1px solid #152030", borderRadius: 8, overflow: "hidden", marginBottom: 8, width: canvasSize.w }}>
-        <canvas ref={canvasRef} style={{ width: canvasSize.w, height: canvasSize.h, display: "block" }} />
+      {/* Canvas — flexible height */}
+      <div style={{ border: "1px solid #152030", borderRadius: 8, overflow: "hidden", marginBottom: 6, width: layoutW, flex: "1 1 0", minHeight: 60, flexShrink: 1 }}>
+        <canvas ref={canvasRef} style={{ width: layoutW, height: canvasH, display: "block" }} />
       </div>
 
-      <div style={{ background: "rgba(10,16,28,0.95)", border: "1px solid #152030", borderRadius: 10, padding: "10px 12px", width: "100%", maxWidth: canvasSize.w, boxSizing: "border-box" }}>
-        <div style={{ display: "flex", gap: 10, marginBottom: 8 }}>
+      {/* Controls */}
+      <div style={{ background: "rgba(10,16,28,0.95)", border: "1px solid #152030", borderRadius: 10, padding: "8px 12px", width: "100%", maxWidth: layoutW, flexShrink: 0 }}>
+        <div style={{ display: "flex", gap: 10, marginBottom: 6 }}>
           <div style={{ flex: 1 }}>
             <label style={{ fontSize: 10, color: "#5ca0f0", display: "block", marginBottom: 3 }}>M（左）</label>
-            <input type="text" inputMode="numeric" value={strM} onChange={(e) => { setStrM(e.target.value); setWarning(null); }} disabled={running} style={Object.assign({}, fi, { color: "#5ca0f0" })} />
+            <input type="text" inputMode="numeric" value={strM}
+              onChange={(e) => { setStrM(e.target.value); setWarning(null); }}
+              onKeyDown={handleKeyDown}
+              disabled={running} style={Object.assign({}, fi, { color: "#5ca0f0" })} />
           </div>
           <div style={{ flex: 1 }}>
             <label style={{ fontSize: 10, color: "#ff5c7a", display: "block", marginBottom: 3 }}>m（右）</label>
-            <input type="text" inputMode="numeric" value={strm} onChange={(e) => { setStrm(e.target.value); setWarning(null); }} disabled={running} style={Object.assign({}, fi, { color: "#ff5c7a" })} />
+            <input type="text" inputMode="numeric" value={strm}
+              onChange={(e) => { setStrm(e.target.value); setWarning(null); }}
+              onKeyDown={handleKeyDown}
+              disabled={running} style={Object.assign({}, fi, { color: "#ff5c7a" })} />
           </div>
         </div>
 
-        {warning && (
-          <div style={{ marginBottom: 8, padding: "6px 10px", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 6, fontSize: 11, color: "#ef4444" }}>⚠ {warning}</div>
-        )}
+        {warning && <div style={{ marginBottom: 6, padding: "5px 10px", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 6, fontSize: 11, color: "#ef4444" }}>⚠ {warning}</div>}
 
-        <div style={{ marginBottom: 8 }}>
+        <div style={{ marginBottom: 6 }}>
           <label style={{ fontSize: 10, color: "#7a8aaa", display: "block", marginBottom: 2 }}>再生速度 ×{speed.toFixed(1)}</label>
           <input type="range" min="0.1" max="20" step="0.1" value={speed} onChange={(e) => setSpeed(Number(e.target.value))} className="fat-slider" />
         </div>
 
-        <div style={{ display: "flex", gap: 4, marginBottom: 10 }}>
+        <div style={{ display: "flex", gap: 4, marginBottom: 8 }}>
           {presets.map((p, i) => (
             <button key={i} onClick={() => { setStrM(p.M); setStrm(p.m); setWarning(null); }} disabled={running}
               style={{ flex: "1 1 0", minWidth: 0, padding: "6px 0", fontSize: 10, background: strM === p.M && strm === p.m ? "#1e3450" : "#0a1020", border: "1px solid #1e3450", borderRadius: 6, color: "#5ca0f0", cursor: running ? "not-allowed" : "pointer", fontFamily: "inherit" }}>{p.label}</button>
@@ -336,12 +326,12 @@ function App() {
         </div>
 
         <button onClick={running ? stop : startSimulation}
-          style={{ width: "100%", padding: 11, fontSize: 14, fontWeight: 700, background: running ? "linear-gradient(135deg,#5a1a1a,#7a2a2a)" : "linear-gradient(135deg,#153060,#2258aa)", border: "none", borderRadius: 8, color: "#fff", cursor: "pointer", fontFamily: "inherit", letterSpacing: 2 }}>
+          style={{ width: "100%", padding: 10, fontSize: 14, fontWeight: 700, background: running ? "linear-gradient(135deg,#5a1a1a,#7a2a2a)" : "linear-gradient(135deg,#153060,#2258aa)", border: "none", borderRadius: 8, color: "#fff", cursor: "pointer", fontFamily: "inherit", letterSpacing: 2 }}>
           {running ? "■ 停止" : "▶ 開始"}
         </button>
 
-        <div style={{ marginTop: 8, padding: "7px 10px", background: "rgba(92,160,240,0.04)", border: "1px solid rgba(92,160,240,0.08)", borderRadius: 6, fontSize: 10, color: "#4a6a8a", lineHeight: 1.7 }}>
-          π = 3.14159265…<br />→ 3, 31, 314, 3141, 31415, …
+        <div style={{ marginTop: 6, padding: "5px 10px", background: "rgba(92,160,240,0.04)", border: "1px solid rgba(92,160,240,0.08)", borderRadius: 6, fontSize: 10, color: "#4a6a8a", lineHeight: 1.7, textAlign: "center" }}>
+          π = 3.14159265… → 3, 31, 314, 3141, 31415, …
         </div>
       </div>
     </div>
